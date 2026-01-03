@@ -1,0 +1,540 @@
+import React, { useState, useRef, useEffect, useCallback } from 'react';
+import { 
+  Upload, Download, Settings, Image as ImageIcon, Trash2, 
+  FileText, RefreshCw, Sun, RotateCw, CheckCircle2, 
+  Type, Maximize, BookOpen, Info, Layers, Star, Move
+} from 'lucide-react';
+
+// 外部載入 jsPDF
+const loadJsPDF = () => {
+  return new Promise((resolve) => {
+    if (window.jspdf) {
+      resolve(window.jspdf);
+      return;
+    }
+    const script = document.createElement('script');
+    script.src = "https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js";
+    script.onload = () => resolve(window.jspdf);
+    document.head.appendChild(script);
+  });
+};
+
+const App = () => {
+  const [mode, setMode] = useState('asymmetric'); // 'classic' 或 'asymmetric'
+  const [backImage, setBackImage] = useState(null);
+  const [brandTitle, setBrandTitle] = useState("數字加減法桌遊");
+  const [isGenerating, setIsGenerating] = useState(false);
+  
+  const renderCanvasRef = useRef(null);
+  const [frontPreviewUrl, setFrontPreviewUrl] = useState("");
+  const [backPreviewUrl, setBackPreviewUrl] = useState("");
+
+  const [sizes, setSizes] = useState({
+    titleFontSize: 7,      // 牌背標題字體 (mm)
+    titleYOffset: 15,      // 牌背標題 Y 位置 (mm)
+    imageScale: 0.8,       // 牌背圖片縮放
+    imageXOffset: 0,       // 牌背圖片 X 位移 (mm)
+    imageYOffset: 0,       // 牌背圖片 Y 位移 (mm)
+    mainNumSize: 45,       // 牌面主數字 (mm)
+    modFontSize: 12,       // 牌面 +- 數字 (mm)
+    modCircleSize: 15,     // 牌面 +- 圓圈半徑 (mm)
+  });
+
+  const config = {
+    cardWidth: 90, 
+    cardHeight: 130,
+    rows: 2,
+    cols: 2,
+    ppi: 5,
+  };
+
+  const getColor = (val) => {
+    const v = Math.abs(val);
+    if (v === 1) return '#16a34a'; // 綠 (簡單)
+    if (v === 2) return '#2563eb'; // 藍 (中等)
+    if (v === 3) return '#dc2626'; // 紅 (困難)
+    return '#334155';
+  };
+
+  // --- 核心渲染：正面 ---
+  const drawFrontCard = useCallback((canvas, card, s, currentMode) => {
+    const ctx = canvas.getContext('2d');
+    const scale = config.ppi;
+    const w = config.cardWidth * scale;
+    const h = config.cardHeight * scale;
+    
+    canvas.width = w;
+    canvas.height = h;
+
+    ctx.fillStyle = '#ffffff';
+    ctx.fillRect(0, 0, w, h);
+    ctx.strokeStyle = '#d1d5db';
+    ctx.lineWidth = 1 * scale;
+    ctx.strokeRect(0, 0, w, h);
+
+    // 中央主數字
+    ctx.fillStyle = '#000000';
+    ctx.font = `bold ${s.mainNumSize * scale}px sans-serif`;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(card.main.toString(), w / 2, h / 2 + (5 * scale));
+
+    const drawMarker = (x, y, value, isFlipped) => {
+      const radius = s.modCircleSize * scale;
+      const color = getColor(value);
+      ctx.save();
+      ctx.translate(x, y);
+      if (isFlipped) ctx.rotate(Math.PI);
+      
+      ctx.beginPath();
+      ctx.arc(0, 0, radius, 0, Math.PI * 2);
+      ctx.fillStyle = '#ffffff';
+      ctx.fill();
+      ctx.strokeStyle = color;
+      ctx.lineWidth = 2 * scale;
+      ctx.stroke();
+
+      ctx.fillStyle = color;
+      ctx.font = `bold ${s.modFontSize * scale}px sans-serif`;
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      
+      let label;
+      if (currentMode === 'classic') {
+        label = `±${Math.abs(card.mod)}`;
+      } else {
+        label = value > 0 ? `+${value}` : `${value}`;
+      }
+      
+      ctx.fillText(label, 0, 1 * scale);
+      ctx.restore();
+    };
+
+    const offset = 22 * scale;
+    if (currentMode === 'classic') {
+      const colorVal = card.mod;
+      drawMarker(w - offset, offset, colorVal, false);
+      drawMarker(offset, h - offset, colorVal, true);
+    } else {
+      drawMarker(w - offset, offset, card.plus, false);
+      drawMarker(offset, h - offset, card.minus, true);
+    }
+    
+    const activeColor = currentMode === 'classic' ? getColor(card.mod) : getColor(Math.max(Math.abs(card.plus), Math.abs(card.minus)));
+    ctx.fillStyle = activeColor;
+    ctx.fillRect(10 * scale, h - (4 * scale), w - (20 * scale), 2.5 * scale);
+    
+    return canvas.toDataURL('image/jpeg', 0.95);
+  }, []);
+
+  // --- 核心渲染：背面 (新增位移與裁切邏輯) ---
+  const drawBackCard = useCallback(async (canvas, imgData, title, s) => {
+    const ctx = canvas.getContext('2d');
+    const scale = config.ppi;
+    const w = config.cardWidth * scale;
+    const h = config.cardHeight * scale;
+    canvas.width = w;
+    canvas.height = h;
+
+    ctx.fillStyle = '#ffffff';
+    ctx.fillRect(0, 0, w, h);
+    ctx.strokeStyle = '#d1d5db';
+    ctx.lineWidth = 1 * scale;
+    ctx.strokeRect(0, 0, w, h);
+
+    // 標題繪製
+    if (title) {
+      ctx.fillStyle = '#4f46e5';
+      ctx.font = `bold ${s.titleFontSize * scale}px sans-serif`;
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'top';
+      // 使用 titleYOffset 控制標題高度
+      ctx.fillText(title, w / 2, s.titleYOffset * scale);
+    }
+
+    // 圖片繪製 (包含位移與縮放)
+    if (imgData) {
+      const img = new Image();
+      img.src = imgData;
+      await new Promise(resolve => img.onload = resolve);
+
+      const baseAreaY = 30 * scale; // 預設圖片可用區域起始點
+      const availW = (w - 20 * scale);
+      const availH = (h - baseAreaY - 10 * scale);
+
+      const ratio = img.width / img.height;
+      let dW, dH;
+      
+      // 依據比例決定基礎大小，再套用自定義縮放
+      if (ratio > availW / availH) {
+        dW = availW * s.imageScale; dH = (availW / ratio) * s.imageScale;
+      } else {
+        dH = availH * s.imageScale; dW = (availH * ratio) * s.imageScale;
+      }
+
+      // 計算中心位置並套用位移
+      const dX = (w - dW) / 2 + (s.imageXOffset * scale);
+      const dY = baseAreaY + (availH - dH) / 2 + (s.imageYOffset * scale);
+
+      // 圓角裁切容器
+      const r = 6 * scale;
+      ctx.save();
+      // 我們定義一個固定的顯示區域，讓圖片在裡面移動 (達成裁切感)
+      ctx.beginPath();
+      const clipMargin = 8 * scale;
+      const clipW = w - clipMargin * 2;
+      const clipH = h - baseAreaY - clipMargin;
+      ctx.roundRect(clipMargin, baseAreaY, clipW, clipH, r);
+      ctx.clip();
+      
+      ctx.drawImage(img, dX, dY, dW, dH);
+      ctx.restore();
+
+      // 繪製裁切區域的邊框
+      ctx.strokeStyle = '#f1f5f9';
+      ctx.lineWidth = 0.5 * scale;
+      ctx.strokeRect(clipMargin, baseAreaY, clipW, clipH);
+    }
+    
+    return canvas.toDataURL('image/jpeg', 0.95);
+  }, []);
+
+  useEffect(() => {
+    const updatePreviews = async () => {
+      if (!renderCanvasRef.current) return;
+      const exampleCard = mode === 'classic' ? { main: 7, mod: 2 } : { main: 7, plus: 2, minus: -1 };
+      const front = drawFrontCard(renderCanvasRef.current, exampleCard, sizes, mode);
+      setFrontPreviewUrl(front);
+      const back = await drawBackCard(renderCanvasRef.current, backImage, brandTitle, sizes);
+      setBackPreviewUrl(back);
+    };
+    updatePreviews();
+  }, [sizes, backImage, brandTitle, mode, drawFrontCard, drawBackCard]);
+
+  const generateDeck = () => {
+    const deck = [];
+    if (mode === 'classic') {
+      const distribution = [
+        { main: 1, mods: { 1: 2, 2: 2, 3: 1 } },
+        { main: 2, mods: { 1: 3, 2: 3, 3: 1 } },
+        { main: 3, mods: { 1: 4, 2: 3, 3: 1 } },
+        { main: 4, mods: { 1: 4, 2: 3, 3: 1 } },
+        { main: 5, mods: { 1: 4, 2: 4, 3: 2 } },
+        { main: 6, mods: { 1: 4, 2: 3, 3: 1 } },
+        { main: 7, mods: { 1: 4, 2: 3, 3: 1 } },
+        { main: 8, mods: { 1: 3, 2: 3, 3: 1 } },
+        { main: 9, mods: { 1: 2, 2: 2, 3: 2 } },
+        { main: 10, mods: { 1: 2, 2: 2, 3: 2 } },
+      ];
+      distribution.forEach(item => {
+        Object.entries(item.mods).forEach(([mod, count]) => {
+          for (let i = 0; i < count; i++) deck.push({ main: item.main, mod: parseInt(mod) });
+        });
+      });
+    } else {
+      const types = [
+        { p: 1, m: -2, count: 25 }, 
+        { p: 2, m: -1, count: 25 }, 
+        { p: 3, m: -2, count: 12 }, 
+        { p: 2, m: -3, count: 11 }, 
+      ];
+      for (let num = 1; num <= 10; num++) {
+        types.forEach(t => {
+          const cardsForNum = Math.ceil(t.count / 10);
+          for(let i=0; i<cardsForNum && deck.length < 73; i++) {
+            deck.push({ main: num, plus: t.p, minus: t.m });
+          }
+        });
+      }
+    }
+    return deck.sort(() => Math.random() - 0.5).slice(0, 73);
+  };
+
+  const exportPDF = async () => {
+    setIsGenerating(true);
+    try {
+      const jspdf = await loadJsPDF();
+      const { jsPDF } = jspdf;
+      const doc = new jsPDF('p', 'mm', 'a4');
+      const deck = generateDeck();
+      const cardsPerPage = config.rows * config.cols;
+      const totalPages = Math.ceil(deck.length / cardsPerPage);
+      const marginX = (210 - (config.cols * config.cardWidth)) / 2;
+      const marginY = (297 - (config.rows * config.cardHeight)) / 2;
+
+      for (let p = 0; p < totalPages; p++) {
+        if (p > 0) doc.addPage();
+        const pageCards = deck.slice(p * cardsPerPage, (p + 1) * cardsPerPage);
+        for (let index = 0; index < pageCards.length; index++) {
+          const col = index % config.cols;
+          const row = Math.floor(index / config.cols);
+          const x = marginX + col * config.cardWidth;
+          const y = marginY + row * config.cardHeight;
+          const cardImg = drawFrontCard(renderCanvasRef.current, pageCards[index], sizes, mode);
+          doc.addImage(cardImg, 'JPEG', x, y, config.cardWidth, config.cardHeight);
+        }
+      }
+
+      const backImg = await drawBackCard(renderCanvasRef.current, backImage, brandTitle, sizes);
+      for (let p = 0; p < totalPages; p++) {
+        doc.addPage();
+        for (let i = 0; i < cardsPerPage; i++) {
+          const col = (config.cols - 1) - (i % config.cols); 
+          const row = Math.floor(i / config.cols);
+          const x = marginX + col * config.cardWidth;
+          const y = marginY + row * config.cardHeight;
+          if ((p * cardsPerPage + i) < deck.length) doc.addImage(backImg, 'JPEG', x, y, config.cardWidth, config.cardHeight);
+        }
+      }
+      doc.save(`${brandTitle}_${mode}.pdf`);
+    } catch (err) { console.error(err); } finally { setIsGenerating(false); }
+  };
+
+  return (
+    <div className="min-h-screen bg-slate-50 font-sans text-slate-900 pb-20">
+      <canvas ref={renderCanvasRef} className="hidden" />
+      
+      <header className="bg-white border-b sticky top-0 z-50 shadow-sm">
+        <div className="max-w-7xl mx-auto px-6 py-4 flex flex-col md:flex-row justify-between items-center gap-4">
+          <div className="flex items-center gap-3">
+            <div className="p-2 bg-indigo-600 rounded-xl shadow-lg">
+              <Sun className="w-8 h-8 text-white" />
+            </div>
+            <div>
+              <h1 className="text-2xl font-black text-indigo-900 leading-tight">數字加減法桌遊產生器</h1>
+              <div className="flex gap-2 mt-1">
+                <button onClick={()=>setMode('asymmetric')} className={`px-3 py-1 rounded-full text-[10px] font-bold uppercase transition-all shadow-sm ${mode==='asymmetric'?'bg-indigo-600 text-white':'bg-slate-100 text-slate-400 hover:bg-slate-200'}`}>非對稱模式</button>
+                <button onClick={()=>setMode('classic')} className={`px-3 py-1 rounded-full text-[10px] font-bold uppercase transition-all shadow-sm ${mode==='classic'?'bg-indigo-600 text-white':'bg-slate-100 text-slate-400 hover:bg-slate-200'}`}>經典模式</button>
+              </div>
+            </div>
+          </div>
+          <button 
+            onClick={exportPDF}
+            disabled={isGenerating}
+            className={`flex items-center gap-3 px-10 py-4 rounded-2xl font-black text-xl transition-all shadow-xl hover:scale-105 active:scale-95 ${
+              isGenerating ? 'bg-slate-200 text-slate-400' : 'bg-indigo-600 hover:bg-indigo-700 text-white'
+            }`}
+          >
+            {isGenerating ? <RefreshCw className="w-6 h-6 animate-spin" /> : <Download className="w-6 h-6" />}
+            {isGenerating ? '同步渲染中...' : '下載 PDF'}
+          </button>
+        </div>
+      </header>
+
+      <main className="max-w-7xl mx-auto px-6 mt-8 grid grid-cols-1 lg:grid-cols-12 gap-8">
+        
+        {/* 控制面板 */}
+        <div className="lg:col-span-4 space-y-6">
+          {/* 模式切換 */}
+          <section className="bg-white p-6 rounded-3xl shadow-sm border border-slate-200">
+            <h2 className="text-xl font-black mb-6 text-indigo-900 flex items-center gap-2 border-b pb-2">
+              <Layers className="w-6 h-6" /> 遊戲模式切換
+            </h2>
+            <div className="grid grid-cols-2 gap-3">
+              <div 
+                onClick={()=>setMode('asymmetric')}
+                className={`cursor-pointer p-4 rounded-2xl border-2 transition-all flex flex-col items-center text-center ${mode==='asymmetric'?'border-indigo-600 bg-indigo-50 shadow-md scale-105':'border-slate-100 hover:border-indigo-200'}`}
+              >
+                <Star className={`w-6 h-6 mb-2 ${mode==='asymmetric'?'text-indigo-600':'text-slate-300'}`} />
+                <p className="font-black text-xs text-indigo-900">非對稱模式</p>
+                <p className="text-[10px] text-slate-500 mt-1 italic leading-tight">加減分開標記</p>
+              </div>
+              <div 
+                onClick={()=>setMode('classic')}
+                className={`cursor-pointer p-4 rounded-2xl border-2 transition-all flex flex-col items-center text-center ${mode==='classic'?'border-indigo-600 bg-indigo-50 shadow-md scale-105':'border-slate-100 hover:border-indigo-200'}`}
+              >
+                <Layers className={`w-6 h-6 mb-2 ${mode==='classic'?'text-indigo-600':'text-slate-300'}`} />
+                <p className="font-black text-xs text-indigo-900">經典模式</p>
+                <p className="text-[10px] text-slate-500 mt-1 italic leading-tight">標準 ± 標記</p>
+              </div>
+            </div>
+          </section>
+
+          {/* 牌背與圖片進階設定 */}
+          <section className="bg-white p-6 rounded-3xl shadow-sm border border-slate-200">
+            <h2 className="text-xl font-black mb-6 text-indigo-900 flex items-center gap-2 border-b pb-2">
+              <ImageIcon className="w-6 h-6" /> 牌背與品牌進階
+            </h2>
+            <div className="space-y-6">
+              {/* 標題設定 */}
+              <div className="space-y-3">
+                <label className="text-xs font-black text-slate-400 uppercase tracking-wider flex items-center gap-2">
+                  <Type className="w-3 h-3" /> 標題文字與位置
+                </label>
+                <input type="text" value={brandTitle} onChange={(e)=>setBrandTitle(e.target.value)} className="w-full p-2 rounded-lg bg-slate-50 border border-slate-200 outline-none font-bold mb-2" />
+                <div className="grid grid-cols-2 gap-4">
+                  <div>
+                    <span className="text-[10px] font-bold text-slate-500 flex justify-between">大小 <span>{sizes.titleFontSize}mm</span></span>
+                    <input type="range" min="3" max="15" step="0.5" value={sizes.titleFontSize} onChange={(e)=>setSizes({...sizes, titleFontSize:parseFloat(e.target.value)})} className="w-full accent-indigo-600" />
+                  </div>
+                  <div>
+                    <span className="text-[10px] font-bold text-slate-500 flex justify-between">垂直位置 <span>{sizes.titleYOffset}mm</span></span>
+                    <input type="range" min="5" max="40" step="0.5" value={sizes.titleYOffset} onChange={(e)=>setSizes({...sizes, titleYOffset:parseFloat(e.target.value)})} className="w-full accent-indigo-600" />
+                  </div>
+                </div>
+              </div>
+
+              {/* 圖片設定 */}
+              <div className="space-y-3 pt-4 border-t border-slate-50">
+                <label className="text-xs font-black text-slate-400 uppercase tracking-wider flex items-center gap-2">
+                  <Move className="w-3 h-3" /> 圖片縮放與位移 (裁切)
+                </label>
+                <div className={`relative border-2 border-dashed rounded-xl p-3 text-center mb-4 ${backImage ? 'bg-green-50 border-green-200' : 'bg-slate-50 border-slate-200'}`}>
+                  {backImage ? (
+                    <div className="flex items-center justify-between px-2">
+                      <div className="flex items-center gap-2">
+                        <img src={backImage} className="w-10 h-10 object-cover rounded" alt="Thumb" />
+                        <span className="text-[10px] font-bold text-green-600">圖片已上傳</span>
+                      </div>
+                      <button onClick={() => setBackImage(null)} className="text-[10px] text-red-500 font-bold underline">移除</button>
+                    </div>
+                  ) : (
+                    <label className="cursor-pointer block">
+                      <span className="text-xs text-indigo-600 font-bold">點此上傳品牌圖片</span>
+                      <input type="file" className="hidden" accept="image/*" onChange={(e) => {
+                        const file = e.target.files[0];
+                        if (file) {
+                          const reader = new FileReader();
+                          reader.onload = (ev) => setBackImage(ev.target.result);
+                          reader.readAsDataURL(file);
+                        }
+                      }} />
+                    </label>
+                  )}
+                </div>
+                
+                <div className="space-y-4">
+                  <div>
+                    <span className="text-[10px] font-bold text-slate-500 flex justify-between">縮放比例 <span>{Math.round(sizes.imageScale * 100)}%</span></span>
+                    <input type="range" min="0.1" max="3.0" step="0.05" value={sizes.imageScale} onChange={(e)=>setSizes({...sizes, imageScale:parseFloat(e.target.value)})} className="w-full accent-indigo-600" />
+                  </div>
+                  <div className="grid grid-cols-2 gap-4">
+                    <div>
+                      <span className="text-[10px] font-bold text-slate-500 flex justify-between">水平 X <span>{sizes.imageXOffset}mm</span></span>
+                      <input type="range" min="-100" max="100" step="1" value={sizes.imageXOffset} onChange={(e)=>setSizes({...sizes, imageXOffset:parseFloat(e.target.value)})} className="w-full accent-indigo-600" />
+                    </div>
+                    <div>
+                      <span className="text-[10px] font-bold text-slate-500 flex justify-between">垂直 Y <span>{sizes.imageYOffset}mm</span></span>
+                      <input type="range" min="-100" max="100" step="1" value={sizes.imageYOffset} onChange={(e)=>setSizes({...sizes, imageYOffset:parseFloat(e.target.value)})} className="w-full accent-indigo-600" />
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </section>
+
+          <section className="bg-white p-6 rounded-3xl shadow-sm border border-slate-200">
+            <h2 className="text-xl font-black mb-6 text-indigo-900 flex items-center gap-2 border-b pb-2">
+              <Maximize className="w-6 h-6" /> 牌面尺寸微調
+            </h2>
+            <div className="space-y-4">
+              <div>
+                <span className="text-[10px] font-bold text-slate-500 flex justify-between">中央主數字 <span>{sizes.mainNumSize}mm</span></span>
+                <input type="range" min="20" max="80" step="1" value={sizes.mainNumSize} onChange={(e)=>setSizes({...sizes, mainNumSize:parseFloat(e.target.value)})} className="w-full accent-indigo-600" />
+              </div>
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <span className="text-[10px] font-bold text-slate-500 flex justify-between">標籤數字 <span>{sizes.modFontSize}mm</span></span>
+                  <input type="range" min="5" max="30" step="1" value={sizes.modFontSize} onChange={(e)=>setSizes({...sizes, modFontSize:parseFloat(e.target.value)})} className="w-full accent-indigo-600" />
+                </div>
+                <div>
+                  <span className="text-[10px] font-bold text-slate-500 flex justify-between">標籤圓圈 <span>{sizes.modCircleSize}mm</span></span>
+                  <input type="range" min="8" max="25" step="1" value={sizes.modCircleSize} onChange={(e)=>setSizes({...sizes, modCircleSize:parseFloat(e.target.value)})} className="w-full accent-indigo-600" />
+                </div>
+              </div>
+            </div>
+          </section>
+        </div>
+
+        {/* 預覽與規則 */}
+        <div className="lg:col-span-8 space-y-6">
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+            <div className="bg-white p-6 rounded-[2.5rem] shadow-sm border border-slate-200">
+              <div className="flex justify-between items-center mb-4 px-2 font-black text-slate-400 text-sm italic underline underline-offset-4 decoration-indigo-200">
+                {mode==='classic'?'CLASSIC':'ASYMMETRIC'} 正面
+              </div>
+              <div className="flex justify-center bg-slate-100 p-6 rounded-[2rem]">
+                {frontPreviewUrl && <img src={frontPreviewUrl} className="w-56 h-auto shadow-2xl rounded-2xl" alt="Front" />}
+              </div>
+            </div>
+            <div className="bg-white p-6 rounded-[2.5rem] shadow-sm border border-slate-200">
+              <div className="flex justify-between items-center mb-4 px-2 font-black text-slate-400 text-sm italic underline underline-offset-4 decoration-indigo-200">BRANDED 牌背</div>
+              <div className="flex justify-center bg-slate-100 p-6 rounded-[2rem]">
+                {backPreviewUrl && <img src={backPreviewUrl} className="w-56 h-auto shadow-2xl rounded-2xl" alt="Back" />}
+              </div>
+            </div>
+          </div>
+
+          <section className="bg-white p-8 rounded-[2.5rem] shadow-sm border border-slate-200">
+            <h2 className="text-2xl font-black mb-6 text-indigo-900 flex items-center gap-3">
+              <BookOpen className="w-7 h-7" /> {mode === 'classic' ? '經典版詳細玩法' : '非對稱平衡版詳細玩法'}
+            </h2>
+            
+            <div className="space-y-8">
+              <div className="flex gap-4 items-start">
+                <div className="bg-indigo-600 text-white w-8 h-8 rounded-full flex items-center justify-center font-black shrink-0 shadow-lg shadow-indigo-100">1</div>
+                <div>
+                  <h3 className="font-black text-slate-800 text-lg">遊戲準備</h3>
+                  <p className="text-sm text-slate-600 leading-relaxed">
+                    平均發給每位玩家手牌，牌面朝下。翻開一張「起始牌」放在中央。其餘牌放回盒子。
+                  </p>
+                </div>
+              </div>
+
+              <div className="flex gap-4 items-start">
+                <div className="bg-indigo-600 text-white w-8 h-8 rounded-full flex items-center justify-center font-black shrink-0 shadow-lg shadow-indigo-100">2</div>
+                <div>
+                  <h3 className="font-black text-slate-800 text-lg">
+                    {mode === 'classic' ? '出牌規則：雙向運算' : '出牌規則：分向運算'}
+                  </h3>
+                  <p className="text-sm text-slate-600 leading-relaxed">
+                    所有人<span className="text-indigo-600 font-bold underline decoration-wavy ml-1 mr-1">同時搶快</span>，不需輪流。出的牌必須符合：<br/>
+                    {mode === 'classic' ? (
+                      <span className="bg-slate-50 px-2 py-1 rounded font-bold border border-slate-100">中央數字 ± 標籤值</span>
+                    ) : (
+                      <span className="bg-slate-50 px-2 py-1 rounded font-bold border border-slate-100">中央數字 + 右上角值 <span className="text-slate-300">或</span> 中央數字 - 左下角值</span>
+                    )}
+                  </p>
+                </div>
+              </div>
+
+              <div className="bg-amber-50 p-6 rounded-3xl border-l-8 border-amber-400 shadow-inner">
+                <h4 className="font-black text-amber-800 mb-2 flex items-center gap-2 italic">
+                   💡 實戰範例 (Example):
+                </h4>
+                {mode === 'classic' ? (
+                  <div className="text-sm text-amber-900 font-medium">
+                    中央牌是 <span className="text-xl font-black mx-1">7</span>，標籤是 <span className="font-bold underline">±2</span><br/>
+                    👉 可出牌：<span className="bg-white px-3 py-0.5 rounded-lg border-2 border-amber-200 font-black mx-1">5</span> (7-2) 或 <span className="bg-white px-3 py-0.5 rounded-lg border-2 border-amber-200 font-black mx-1">9</span> (7+2)。
+                  </div>
+                ) : (
+                  <div className="text-sm text-amber-900 font-medium leading-relaxed">
+                    中央牌是 <span className="text-xl font-black mx-1">7</span>，右上是 <span className="text-green-600 font-black underline">+2</span>，左下是 <span className="text-red-600 font-black underline">-1</span><br/>
+                    👉 可出牌：<span className="bg-white px-3 py-0.5 rounded-lg border-2 border-amber-200 font-black mx-1">9</span> (7+2) 或 <span className="bg-white px-3 py-0.5 rounded-lg border-2 border-amber-200 font-black mx-1">6</span> (7-1)。
+                  </div>
+                )}
+              </div>
+
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-6 text-sm">
+                <div className="p-5 bg-indigo-50/50 rounded-2xl border border-indigo-100">
+                  <h4 className="font-black text-indigo-900 mb-2 flex items-center gap-2"><RotateCw className="w-4 h-4" /> 數字循環</h4>
+                  數字 1-10。若 10+1 變 1；若 1-2 變 9。像旋轉木馬一樣循環！
+                </div>
+                <div className="p-5 bg-indigo-50/50 rounded-2xl border border-indigo-100">
+                  <h4 className="font-black text-indigo-900 mb-2 flex items-center gap-2"><CheckCircle2 className="w-4 h-4" /> 如何獲勝</h4>
+                  最快出完手牌者獲勝。記得出完最後一張要大喊「我贏了！」
+                </div>
+              </div>
+            </div>
+          </section>
+        </div>
+      </main>
+
+      <footer className="text-center py-10 text-slate-300 font-bold text-sm tracking-widest uppercase">
+        Digital Teaching Tool · Brand Edition · 2026
+      </footer>
+    </div>
+  );
+};
+
+export default App;
