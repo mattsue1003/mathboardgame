@@ -331,9 +331,20 @@
                                 </div>
                                 <div>
                                     <h1 className="text-2xl font-black text-indigo-900 leading-tight">數字加減法產生器</h1>
-                                    <div className="flex gap-2 mt-1">
-                                        <button onClick={()=>setMode('asymmetric')} className={`px-3 py-0.5 rounded-full text-[10px] font-bold uppercase ${mode==='asymmetric'?'bg-indigo-600 text-white':'bg-slate-100 text-slate-400 hover:bg-slate-200'}`}>非對稱模式</button>
-                                        <button onClick={()=>setMode('classic')} className={`px-3 py-0.5 rounded-full text-[10px] font-bold uppercase ${mode==='classic'?'bg-indigo-600 text-white':'bg-slate-100 text-slate-400 hover:bg-slate-200'}`}>經典模式</button>
+                                    
+                                    {/* 網頁設計與新書資訊 */}
+                                    <div className="flex flex-wrap gap-x-4 gap-y-1 mt-1 text-[11px] font-bold text-slate-400">
+                                        <a href="https://www.facebook.com/chungmenghsiu" target="_blank" rel="noopener noreferrer" className="flex items-center gap-1 hover:text-indigo-600 transition-colors">
+                                            <Icon name="user" className="w-3 h-3" /> 網頁設計：鍾孟修 職能治療師
+                                        </a>
+                                        <a href="https://www.books.com.tw/products/0011022363?srsltid=AfmBOorFYoPeQVAfwl3DcUSSqyaPt9mf8TiG9myi2xvOvMMo_YkUKaLc" target="_blank" rel="noopener noreferrer" className="flex items-center gap-1 hover:text-indigo-600 transition-colors">
+                                            <Icon name="book" className="w-3 h-3" /> 新書：讓你健康不失智的體智能
+                                        </a>
+                                    </div>
+
+                                    <div className="flex gap-2 mt-2">
+                                        <button onClick={()=>setMode('asymmetric')} className={`px-3 py-0.5 rounded-full text-[10px] font-bold uppercase ${mode==='asymmetric'?'bg-indigo-600 text-white shadow-md shadow-indigo-100':'bg-slate-100 text-slate-400 hover:bg-slate-200'}`}>非對稱模式</button>
+                                        <button onClick={()=>setMode('classic')} className={`px-3 py-0.5 rounded-full text-[10px] font-bold uppercase ${mode==='classic'?'bg-indigo-600 text-white shadow-md shadow-indigo-100':'bg-slate-100 text-slate-400 hover:bg-slate-200'}`}>經典模式</button>
                                     </div>
                                 </div>
                             </div>
@@ -355,7 +366,7 @@
                             {/* 排版與模式 */}
                             <section className="bg-white p-6 rounded-3xl shadow-sm border border-slate-200">
                                 <h2 className="text-lg font-black mb-4 text-indigo-900 flex items-center gap-2">
-                                    <Icon name="layout" className="w-5 h-5" /> 排版與模式選擇
+                                    <Icon name="layout" className="w-5 h-5" /> 排版選擇
                                 </h2>
                                 <div className="grid grid-cols-3 gap-2 mb-4">
                                     {['4', '6', '9'].map(id => (
@@ -538,7 +549,7 @@
                     </main>
 
                     <footer className="text-center py-10 text-slate-300 font-bold text-xs tracking-widest uppercase">
-                        Digital Math Game Generator · Ver 3.0 · 2026
+                        Digital Math Game Generator · Ver 3.5 · 2026
                     </footer>
                 </div>
             );
